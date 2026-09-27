@@ -1,6 +1,6 @@
 #!/bin/bash
 # Logs every time the trap wakes up, to find out how often it checks in on its own.
-# Leave it running overnight or longer, with the computer plugged in. On macOS it stops the
+# Leave it running for a day or two, with the computer plugged in. On macOS it stops the
 # computer from idle-sleeping while it runs; elsewhere, turn off sleep yourself. No password needed: any answer from the trap's web server
 # means it's awake. It only asks for the main page, so it's safe to run alongside
 # update-trap.sh or capture-trap-log.sh.
@@ -23,6 +23,15 @@ else
 fi
 
 echo "Watching $IP; wakes are logged to $OUT (Ctrl+C to stop)."
+# The start and stop lines show how long it watched, even if the trap never woke
+began=$(date +%s)
+echo "$(date '+%Y-%m-%d %H:%M:%S') started watching" >> "$OUT"
+stopped() {
+  m=$(( ($(date +%s) - began) / 60 ))
+  echo "$(date '+%Y-%m-%d %H:%M:%S') stopped after $((m / 60)) h $((m % 60)) min" | tee -a "$OUT"
+  exit 0
+}
+trap stopped INT TERM
 awake=0; fails=0; prev=""; start=0; seen=0
 while :; do
   code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 0.5 --max-time 1 "http://$IP/")

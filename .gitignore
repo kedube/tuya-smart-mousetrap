@@ -1,1 +1,4 @@
 .DS_Store
+Tools/*
+Firmware/*
+trap.conf

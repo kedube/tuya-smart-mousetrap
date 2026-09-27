@@ -43,8 +43,9 @@ the battery connector. Full-size photos: [board](Images/board.jpeg), [P3](Images
 [BK7231N](Images/bk7231n.jpeg).*
 
 The two chips talk **TuyaMCU low-power protocol v0 at 9600 baud**. Evidence for this:
-the dump's Tuya config has `baud_cfg: 9600`, and the MCU firmware version is 1.0.7 (`mst_tp_0: 9` = MCU;
-1.0.8 after an update from the Tuya app).
+the dump's Tuya config has `baud_cfg: 9600`, and a logic analyzer on P3 shows the frames
+(`55 AA 00 …`). The MCU identifies itself as `{"p":"6j6pmks80ftdhg9p","v":"1.0.7","m":1}`:
+Tuya product ID `6j6pmks80ftdhg9p`, firmware 1.0.7 (1.0.8 after an update from the Tuya app).
 On the NAS-MA01W sibling model, the captured frames were `55AA 00 05 …`, which is protocol version 0, command 0x05.
 
 The datapoint schema stored in the dump (key `e1ms15fc`):
@@ -52,20 +53,37 @@ The datapoint schema stored in the dump (key `e1ms15fc`):
 | dpID | Type | Meaning |
 | --- | --- | --- |
 | 101 | bool, read-only | **Mouse killed** (Tuya app name), shown in HA as *No* / *Yes*. The trap sends No every time it's switched on and Yes when it kills. It has no separate armed signal: a fresh No means it was just switched on. |
-| 102 | enum 0–3, read-only | **Battery life** (Tuya app name), shown in HA as *Battery*. 0 = 100 % (new cells send 0; the Tuya app shows 100 %), 1 = 75 %, 2 = 50 %, 3 = 25 %. Sent on every wake. On the USB-UART adapter it sends 3 (25 %), so ignore it there. |
+| 102 | enum 0–3, read-only | **Battery life** (Tuya app name), shown in HA as *Battery*. 0 = 100 % (new cells send 0; the Tuya app shows 100 %), 1 = 75 %, 2 = 50 %, 3 = 25 %. With MCU firmware 1.0.8 it came with every switch-on report in testing with OpenBeken; 1.0.7 didn't send it (see [Recommended: update the MCU first](#recommended-update-the-mcu-first)). It isn't sent on a button-press wake. On the USB-UART adapter it sends 3 (25 %), so ignore it there. |
 | 103 | bool, read-only | **Low voltage** (Tuya app name). 1 = replace the batteries. The trap hasn't sent it in any capture yet, so `autoexec.bat` also sets it from the battery reading: Off at 50 % or more, On at 25 %. The trap's own value wins when it sends one. |
 
 Home Assistant also gets **Armed** (Yes / No). `autoexec.bat` works it out from Mouse killed,
 because the trap has no armed datapoint: Yes when it reports "Mouse killed: No" at switch-on, No after a kill.
-It can't show the trap being switched off: no report has been seen at switch-off, so Armed stays
-Yes until the trap next reports.
+It can't show the trap being switched off: the switch cuts power to both chips without a report
+(checked with a logic analyzer on P3), so Armed stays Yes until the trap next reports.
 
 **What this means for the firmware:** you only replace the BK7231N firmware, and you keep the
 MCU. OpenBeken already supports this protocol through its `tmSensor` driver, so no custom C code
-is needed. The driver waits for MQTT to connect, tells the MCU "cloud connected", receives the
-datapoints, publishes them, and ACKs. The MCU then cuts power.
+is needed. A logic analyzer on P3 shows each report going the same way with the stock firmware
+and with OpenBeken:
 
-**Why MQTT rather than ESPHome:** the Wi-Fi chip is only awake for a few seconds per event.
+| Step | From | What's sent |
+| --- | --- | --- |
+| 1 | Wi-Fi chip | "Product info?" (`0x01`), 1–2 s after power-on |
+| 2 | MCU | Product ID and firmware version |
+| 3 | Wi-Fi chip | Network status (`0x02`): `03` connected to router, then `04` connected to cloud |
+| 4 | MCU | "Wi-Fi firmware update?" (`0x0A`), then the datapoints (`0x05`) |
+| 5 | Wi-Fi chip | An ACK for each datapoint, then "no update" (`01`) to `0x0A` |
+| 6 | MCU | "MCU firmware update?" (`0x0C`); the Wi-Fi chip answers `01` |
+| 7 | MCU | Switches the Wi-Fi chip off about 6 s later |
+
+The `tmSensor` driver does steps 1, 3 and the ACKs. OpenBeken doesn't know `0x0A` or `0x0C`, so
+`autoexec.bat` answers them, a few seconds late like the stock firmware (which asks Tuya's servers
+first). A report takes about 20 s. The MCU waits for "connected to cloud": when Wi-Fi failed, it
+kept the chip powered for the whole minute that was recorded. When the stock firmware answers `0x0C` with `02`, it
+sends the MCU a firmware update in 256-byte blocks (`0x0D`, `0x0E`); that's how the Tuya app
+updates the MCU. A short press of the pairing button wakes the chip for steps 1–3 only.
+
+**Why MQTT rather than ESPHome:** the Wi-Fi chip is only awake for about 20 seconds per report.
 MQTT *retained* messages let Home Assistant keep the last state while the trap is off.
 ESPHome's `tuya` component doesn't implement this low-power handshake, and it connects more slowly.
 
@@ -120,12 +138,13 @@ Any of these tools can back up and flash the BK7231N:
 Put the tool in `Tools/` and the firmware files in `Firmware/`. This repo's `.gitignore` keeps both
 folders (and `logs/` and `trap.conf`) out of git, so a backup doesn't get committed by accident.
 
-### Optional: update the trap first
+### Recommended: update the MCU first
 
-The trap's controller can only be updated from the Tuya app, which needs the stock firmware. This
-guide was tested with controller firmware 1.0.8; the trap it was written on shipped with 1.0.7.
-To match, pair the trap in the Tuya or Smart Life app, install any firmware update it offers, and
-then back up.
+The MCU can only be updated from the Tuya app, which needs the stock firmware, so do it before
+you flash. The trap this guide was written on shipped with MCU firmware 1.0.7, which didn't send
+the battery level; 1.0.8 does. Pair the trap in the Tuya or Smart Life app and install the update
+it offers. The Wi-Fi chip is off most of the time, so when the app waits for the trap, press the
+pairing button once to wake it. Then back up.
 
 ### Open the case
 
@@ -217,7 +236,7 @@ stays awake while you set it up.
    `Mouse_Trap_2` and a copy of the YAML with those names.
    The user can't be named `homeassistant` or `addons`, because the Mosquitto add-on reserves them.
 4. **Config → Configure IP** *(required)*: set a static IP. On batteries the trap only powers
-   the Wi-Fi chip for a few seconds, which isn't enough time for DHCP plus OpenBeken's default
+   the Wi-Fi chip briefly, which isn't enough time for DHCP plus OpenBeken's default
    connect delays. Also reserve that address for the trap's MAC in your router, so it isn't handed to
    another device while the trap sleeps. `autoexec.bat` turns on fast connect (Flag 37) for the
    same reason.
@@ -234,7 +253,7 @@ stays awake while you set it up.
 8. Changing `autoexec.bat` once the trap is on batteries: run `./update-trap.sh` and switch the trap
    off and on. It waits for the trap to wake, uploads the file, and prints the values the trap reports.
 9. Updating OpenBeken later: over-the-air (OTA) updates only work on adapter power, because on
-   batteries the chip is awake for only a few seconds.
+   batteries the chip is awake for only about 20 seconds per report.
 
 ## Step 3: Home Assistant
 
@@ -270,13 +289,16 @@ stays awake while you set it up.
    `./update-trap.sh` and `./capture-trap-log.sh` show the same values from the trap's side.
 4. After a catch, *Mouse killed* changes to *Yes*, and the optional YAML sends an alert.
 5. The *last seen* sensor shows when the trap last woke.
-6. The trap wakes when it's switched on and to report a kill. How often it wakes on its own, if
-   at all, isn't known: nothing in the Tuya firmware sets it (the trap's controller decides), and
-   the trap this guide was written on didn't wake by itself in the first 20 hours after it was
-   switched on. So Battery and Armed only update when the trap wakes. Switch it off and on when
-   you check it to get a fresh reading. To find out how yours behaves, `./watch-trap-wakes.sh`
-   logs each wake with the time since the previous one. Leave it running overnight, with the
-   computer plugged in.
+6. The trap wakes when it's switched on and to report a kill. Don't count on it checking in by
+   itself: the trap this guide was written on didn't wake once in 33 hours of watching. Whether
+   it ever does isn't known, because the trap's controller decides and nothing in the Tuya
+   firmware sets it. So Battery and Armed only update when the trap wakes, and an old *last seen*
+   time is normal: Home Assistant can't tell a quiet trap from one with dead batteries. Switch it
+   off and on when you check it to get a fresh reading. One short press of the pairing button
+   also wakes it, which updates *last seen* but sends no new values (a long press is the Wi-Fi
+   reset instead). To see how yours behaves,
+   `./watch-trap-wakes.sh` logs each wake with the time since the previous one. Leave it running
+   for a day or two, with the computer plugged in.
 
 ## Troubleshooting
 
@@ -290,6 +312,36 @@ stays awake while you set it up.
 | Temperature, RSSI, uptime, build, SSID or IP sensors missing | OpenBeken's discovery only creates them while Flag 10 (or 2) is on. `autoexec.bat` sets Flag 10; run discovery again after it has booted (or run `./update-trap.sh`, which sets it before discovery). |
 | An old entity is still listed after you change a channel's type | Its discovery message is still retained on the broker. In **Settings → Devices & services → MQTT → Configure**, publish an empty message with **Retain** on to its discovery topic (`homeassistant/<type>/<unique id>/config`, listed under **MQTT INFO** on the device page). Home Assistant then removes it. |
 | Entities show *Unavailable* while the trap sleeps | Discovery ran before `autoexec.bat` was in place. Reboot so it runs, then run **Start Home Assistant Discovery** again. |
+
+### Watching the two chips with a logic analyzer
+
+If reports go missing and the OpenBeken log doesn't say why, a logic analyzer on P3 shows what
+the MCU and the Wi-Fi chip say to each other. It also catches wakes that never reach Wi-Fi.
+You need an 8-channel USB logic analyzer (about $10–15) and
+[Saleae Logic 2](https://www.saleae.com/pages/downloads) or
+[PulseView](https://sigrok.org/wiki/Downloads). If PulseView lists analog channels your analyzer
+doesn't have, it's recording its built-in demo device instead.
+
+| Analyzer | P3 row | Shows |
+| --- | --- | --- |
+| Channel 0 | 1: CEN | The chip's enable line |
+| Channel 1 | 8: 3V3 | Power |
+| Channel 2 | 2: RXD | What the MCU sends |
+| Channel 3 | 3: TXD | What the Wi-Fi chip sends |
+| GND | 9: GND (the 9th row, not the printed "GND" label) | |
+
+The trap runs on its batteries for this, so:
+- Connect the wires with the batteries out, and disconnect the USB-UART adapter.
+- Route the wires out and close the case if you can. Don't touch the board while the batteries
+  are in, and keep your hands out of the kill chamber.
+- The analyzer connects the trap's ground to your computer's ground, which can give a shock from
+  the plates an easier path.
+
+Record at 1 MHz, and add a UART (Async Serial) analyzer at 9600 baud, 8N1, on channels 2 and 3
+with hex output. Each frame starts `55 AA 00`, followed by the command byte. A normal report
+follows the table in [How this trap works](#how-this-trap-works) and takes about 20 s. Between
+reports, channels 2 and 3 dip low for about 1 ms every 50 ms; that's normal, and the stock
+firmware does the same.
 
 ## Restoring stock firmware
 

@@ -22,8 +22,11 @@ tuyaMcu_setBaudRate 9600
 //                    capture yet, so it's also worked out from the battery reading (below).
 linkTuyaMCUOutputToChannel 101 bool 1
 // args: [dpId] [type] [channel] [obkFlags] [mult] [inverse] [delta]; value = (raw + delta) * mult,
-// so (raw - 4) * -25 turns 0 into 100 % and 3 into 25 %
-linkTuyaMCUOutputToChannel 102 enum 2 0 -25 0 -4
+// so (raw - 4) * -25 turns 0 into 100 % and 3 into 25 %. obkFlags 1 stops OpenBeken sending
+// the converted value back: without it, every wake told the controller "set dp102 to 100"
+// (seen with a logic analyzer). The flag also puts dp102 in OpenBeken's answer to a "cached
+// values?" request (0x10), which this controller hasn't sent in any capture.
+linkTuyaMCUOutputToChannel 102 enum 2 1 -25 0 -4
 linkTuyaMCUOutputToChannel 103 bool 3
 
 // Channel types decide what Home Assistant discovery creates, and the labels become the entity
