@@ -1,0 +1,94 @@
+# Optional Home Assistant package: phone alerts and a "last seen" sensor for the mouse trap.
+#
+# The trap's entities (Armed, Mouse killed, Battery, Low voltage) come from OpenBeken's Home
+# Assistant discovery. This file only adds alerts on top of them.
+#
+# Home Assistant names the entities after OpenBeken's short name and the channel labels. With the
+# short name Mouse_Trap_1 from the README, they are:
+#   Armed        = sensor.mouse_trap_1_armed          ("Yes" / "No")
+#   Mouse killed = sensor.mouse_trap_1_mouse_killed   ("No" / "Yes")
+#   Battery      = sensor.mouse_trap_1_battery        (%)
+#   Low voltage  = binary_sensor.mouse_trap_1_low_voltage
+# Check them under Settings -> Devices & services -> MQTT -> Mouse_Trap_1. If you picked another
+# short name or Client Topic, or Home Assistant added a suffix such as _2, change them below:
+# search for "mouse_trap_1" (entity IDs) and "Mouse_Trap_1/" (the MQTT topic).
+#
+# Install: replace notify.notify with your phone's service (for example
+# notify.mobile_app_<your_phone>), copy this file to /config/packages/mousetrap.yaml, and make
+# sure configuration.yaml has
+#   homeassistant:
+#     packages: !include_dir_named packages
+
+homeassistant:
+  # Icons. OpenBeken's discovery can't set them, so they're set here (or per entity in the UI).
+  customize:
+    sensor.mouse_trap_1_armed:
+      icon: mdi:checkbox-marked-circle
+    sensor.mouse_trap_1_mouse_killed:
+      icon: mdi:rodent
+    binary_sensor.mouse_trap_1_low_voltage:
+      icon: mdi:flash-triangle
+
+template:
+  # OpenBeken publishes a retained "online" to <Client Topic>/connected each time the trap wakes,
+  # and the broker replaces it with "offline" (last will) after power is cut.
+  - triggers:
+      - trigger: mqtt
+        topic: "Mouse_Trap_1/connected"
+        payload: "online"
+    sensor:
+      - name: "Mouse Trap last seen"
+        unique_id: mousetrap_last_seen
+        device_class: timestamp
+        state: "{{ now().isoformat() }}"
+
+automation:
+  # Switched-on confirmation: the trap wakes and reports "Mouse killed: No" every time it's switched on.
+  - id: mousetrap_checkin_notify
+    alias: "Mouse trap: checked in"
+    triggers:
+      - trigger: state
+        entity_id: sensor.mouse_trap_last_seen
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.from_state is not none
+             and trigger.to_state.state not in ['unknown', 'unavailable'] }}
+    actions:
+      # Wait for the trap's report to arrive after it connects
+      - delay: "00:00:10"
+      - action: notify.notify
+        data:
+          title: "Mouse trap"
+          message: >-
+            Checked in. Armed: {{ states('sensor.mouse_trap_1_armed') }},
+            mouse killed: {{ states('sensor.mouse_trap_1_mouse_killed') }},
+            battery {{ states('sensor.mouse_trap_1_battery') }}%.
+
+  - id: mousetrap_caught_notify
+    alias: "Mouse trap: mouse killed"
+    triggers:
+      - trigger: state
+        entity_id: sensor.mouse_trap_1_mouse_killed
+        to: "Yes"
+        not_from: ["unknown", "unavailable"]
+    actions:
+      - action: notify.notify
+        data:
+          title: "Mouse trap"
+          message: "Mouse killed. Empty the trap and switch it back on."
+
+  # Low voltage turns on when the trap's battery reading drops to 25 % or the trap sends its own
+  # Low voltage alarm. On the USB-UART adapter the trap reads 25 %, so it can fire during setup.
+  - id: mousetrap_low_battery_notify
+    alias: "Mouse trap: low voltage"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.mouse_trap_1_low_voltage
+        from: "off"
+        to: "on"
+    actions:
+      - action: notify.notify
+        data:
+          title: "Mouse trap"
+          message: "Low voltage. Replace the 4 x AA cells."

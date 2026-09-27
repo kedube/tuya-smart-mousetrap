@@ -1,0 +1,4 @@
+# Copy this file to trap.conf and set your trap's static IP address.
+# update-trap.sh, capture-trap-log.sh and watch-trap-wakes.sh use it when you don't give an
+# IP on the command line. trap.conf is in .gitignore, so it stays on your computer.
+TRAP_IP=192.168.1.50
